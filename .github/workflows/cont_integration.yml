@@ -3,7 +3,6 @@ on: [push, pull_request]
 name: CI
 
 jobs:
-
   build-test:
     name: Build and test
     runs-on: ubuntu-latest
@@ -12,6 +11,7 @@ jobs:
         rust:
           - version: 1.60.0 # STABLE
             clippy: true
+            coverage: true
           - version: 1.56.1 # MSRV
         features:
           - default
@@ -51,13 +51,33 @@ jobs:
         run: rustup component add clippy
       - name: Update toolchain
         run: rustup update
+      - name: Install grcov
+        if: ${{ matrix.rust.coverage }}
+        run: if [[ ! -e ~/.cargo/bin/grcov ]]; then cargo install grcov; fi
       - name: Build
         run: cargo build --features ${{ matrix.features }} --no-default-features
       - name: Clippy
         if: ${{ matrix.rust.clippy }}
         run: cargo clippy --all-targets --features ${{ matrix.features }} --no-default-features -- -D warnings
-      - name: Test
+      - name: Run test with cargo flags
+        if: ${{ matrix.rust.coverage }}
+        env:
+          RUSTFLAGS: "-Cinstrument-coverage"
+          RUSTDOCFLAGS: "-Cinstrument-coverage"
+          LLVM_PROFILE_FILE: "report-%p-%m.profraw"
         run: cargo test --features ${{ matrix.features }} --no-default-features
+      - name: Test
+        if: ${{! matrix.rust.coverage }}
+        run: cargo test --features ${{ matrix.features }} --no-default-features
+      - name: Run grcov
+        if: ${{ matrix.rust.coverage }}
+        run: mkdir coverage; grcov . --binary-path ./target/debug/ -s . -t lcov --branch --ignore-not-existing --ignore '../**' -o ./coverage/lcov-${{ hashFiles('.cache_key') }}.info
+      - name: Upload artifact
+        if: ${{ matrix.rust.coverage }}
+        uses: actions/upload-artifact@v2
+        with:
+          name: coverage-report-${{ hashFiles('.cache_key') }}
+          path: ./coverage/lcov-${{ hashFiles('.cache_key') }}.info
 
   test-readme-examples:
     name: Test README.md examples
@@ -172,3 +192,21 @@ jobs:
         run: rustup update
       - name: Check fmt
         run: cargo fmt --all -- --config format_code_in_doc_comments=true --check
+
+  coverage:
+    name: Upload Coverage Reports
+    runs-on: ubuntu-latest
+    needs: build-test
+    steps:
+      - name: Download Artifacts
+        uses: actions/download-artifact@v3
+        with:
+          path: ./coverage/
+      - name: Display structure of downloaded files
+        run: ls -R
+        working-directory: ./coverage/
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v2
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          directory: ./coverage/*
